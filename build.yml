@@ -1,0 +1,59 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.3.0
+          use-dotnet: false
+          include-templates: true
+
+      - name: Android SDK
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34" > /dev/null
+
+      - name: Debug keystore and Godot settings
+        run: |
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore $HOME/debug.keystore -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          mkdir -p $HOME/.config/godot
+          printf '%s\n' '[gd_resource type="EditorSettings" format=3]' '' '[resource]' \
+            "export/android/android_sdk_path = \"$ANDROID_HOME\"" \
+            "export/android/java_sdk_path = \"$JAVA_HOME\"" \
+            "export/android/debug_keystore = \"$HOME/debug.keystore\"" \
+            'export/android/debug_keystore_user = "androiddebugkey"' \
+            'export/android/debug_keystore_pass = "android"' \
+            > $HOME/.config/godot/editor_settings-4.3.tres
+          cp $HOME/.config/godot/editor_settings-4.3.tres $HOME/.config/godot/editor_settings-4.tres
+
+      - name: Import and smoke test
+        continue-on-error: true
+        run: |
+          godot --headless --path . --import || true
+          timeout 90 godot --headless --path . --quit-after 300 2>&1 | tee smoke.log || true
+          grep -nE "ERROR|Parse Error|SCRIPT" smoke.log || echo "no errors found"
+
+      - name: Export APK
+        run: |
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/kazan.apk
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: |
+            build/kazan.apk
+            smoke.log
